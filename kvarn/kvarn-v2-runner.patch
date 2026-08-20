@@ -24,7 +24,8 @@ V2 runner; every blocker was allocator/geometry logic:
     prefix caching, and mamba_cache_mode=align hits this on the second request.)
 
 Measured on an RTX 3090 (WSL2, 250W), fast variant, 10-round averages:
-  de 79 / en 129 / code 186 tok/s (peak 468 when the lookup fires), 240k max-model-len
+  de 79 / en 129 / code 186 tok/s (single runs up to ~225 at 86% draft acceptance,
+  per-round /metrics deltas), 240k max-model-len
   with 268k tokens of KV, 200k-deep needle correct, and a 200k prefix-cache hit takes
   the follow-up turn from ~7.5 min of prefill to 4.4 s.
 

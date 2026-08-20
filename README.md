@@ -104,7 +104,7 @@ with an explicit `--block-size` can hit). RTX 3090 at 250 W, 10-round averages:
 |---|---|
 | German prose | 79 |
 | English prose | 129 |
-| code | 186 (peak 468 when the lookup fires) |
+| code | 186 (single runs up to ~225 at 86% measured draft acceptance) |
 | KV capacity at 240k max-model-len | 268k tokens |
 | 200k-deep needle | correct |
 | turn 2 over a 200k cached prefix | 4.4 s (vs ~7.5 min cold) |
