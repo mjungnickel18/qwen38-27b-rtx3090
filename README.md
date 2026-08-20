@@ -86,6 +86,33 @@ approximating it, and GSM8K reads 96.0-96.5% across the three columns. What
 the whole reason it is opt-in, and why the default stays where it is for anyone
 serving more than a few people. Every other knob: [single-user/](single-user/).
 
+### DFlash2 at 240k: `CTX=huge` (KVarN) now combines with `SPEC=dflash2`
+
+```bash
+bash kvarn/install.sh                # applies kvarn-v2-runner.patch as its second stage
+SPEC=dflash2 CTX=huge PREFIX_CACHE=1 bash single-user/start_qwen.sh
+```
+
+The two features used to exclude each other: KVarN keyed the long context, DFlash2
+keyed the speed, and the V2 runner only knew bf16/fp8 KV. `kvarn/kvarn-v2-runner.patch`
+closes that gap — no kernel work, the KVarN Triton kernels run unmodified on the V2
+runner; all six fixes are allocator and geometry logic (the patch header walks through
+them, including an upstream vLLM bug in the mamba align resume path that any hybrid
+with an explicit `--block-size` can hit). RTX 3090 at 250 W, 10-round averages:
+
+| decode (`SPEC=dflash2 CTX=huge`) | tok/s |
+|---|---|
+| German prose | 79 |
+| English prose | 129 |
+| code | 186 (peak 468 when the lookup fires) |
+| KV capacity at 240k max-model-len | 268k tokens |
+| 200k-deep needle | correct |
+| turn 2 over a 200k cached prefix | 4.4 s (vs ~7.5 min cold) |
+
+That is ~5% under `CTX=fast` DFlash2 decode with 3.75x its context. Verified under
+WSL2 as well (set `VLLM_WSL_PIN_MEMORY=1` there — the V2 runner's UVA buffers work
+fine on WSL2's paravirt driver; vLLM's blanket pin-memory ban predates it).
+
 ## Benchmarks
 
 Full tables per mode in [batch/README.md](batch/README.md) and

@@ -59,8 +59,9 @@ CTX=${CTX:-fast}
 # SPEC=dflash2: the DFlash2 block drafter (incoai/Qwen3.8-27B-DFlash2, requantized
 #   to W4A16 by this repo: fetch_dflash2.py), 7 drafts in ONE non-autoregressive
 #   pass + a path selector; runs on vLLM's V2 model runner
-#   (patches/dflash2-backport.patch). CTX=fast only (bf16 KV / FLASH_ATTN; the
-#   drafter's block attention is non-causal); see README "DFlash2".
+#   (patches/dflash2-backport.patch). CTX=fast (bf16 KV / FLASH_ATTN) or, with
+#   kvarn/install.sh, CTX=huge (KVarN 4/2-bit KV, 240k + prefix caching); see
+#   README "DFlash2".
 SPEC=${SPEC:-mtp}
 # SPEC_ATTN=1: split-KV Triton attention for the multi-query verify step
 # (patches/spec-decode-attn.patch); bf16 KV only, so CTX=fast only.
@@ -80,8 +81,10 @@ else
   ATTN_ARGS="--kv-cache-dtype fp8"
 fi
 if [ "$SPEC" = "dflash2" ]; then
-  if [ "$CTX" != "fast" ]; then
-    echo "SPEC=dflash2 is CTX=fast only (bf16 KV, FLASH_ATTN); CTX=$CTX keeps SPEC=mtp" >&2
+  # CTX=huge works since kvarn/kvarn-v2-runner.patch (KVarN on the V2 runner);
+  # CTX=long stays MTP-only (fp8 KV needs FA3/SM90 or Triton fp8e4nv/SM89+).
+  if [ "$CTX" = "long" ]; then
+    echo "SPEC=dflash2 supports CTX=fast and CTX=huge (kvarn/); CTX=long keeps SPEC=mtp" >&2
     SPEC=mtp
   fi
 fi
@@ -108,6 +111,16 @@ if [ "$SPEC" = "dflash2" ]; then
   # instead of 8 and 56k of context instead of 64k. Worth setting for a coding assistant
   # applying edits or a RAG front-end quoting sources; the default stays 7.
   DRAFT_TOKENS=${DFLASH_TOKENS:-7}
+  if [ "$CTX" = "huge" ]; then
+    # KVarN pool: ~20 KB/token effective. 5.26 GiB pinned -> 268k tokens of KV at
+    # 240k max-model-len with 2 slots (the drafter pays one aligned state page per
+    # slot, so single-user long-context keeps MAX_SEQS small). The split-KV verify
+    # attention is bf16-KV only -- the KVarN backend brings its own dequant path.
+    MAX_SEQS=${MAX_SEQS:-2}
+    MAX_LEN=${DFLASH_MAX_LEN:-245760}
+    KV_MEM=${KV_MEM-5261334938}
+    export VLLM_SPEC_DECODE_ATTN=0
+  fi
   SPEC_CFG="{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":$DRAFT_TOKENS}"
   # The split-KV verify attention (patches/spec-decode-attn.patch) sizes its partial
   # buffers once for the longest query block it will see -- a captured CUDA graph holds
@@ -166,6 +179,9 @@ fi
 # per request (~16% of the KV pool). Hybrid models keep this opt-in upstream.
 if [ "${PREFIX_CACHE:-0}" = "1" ]; then
   EXTRA_ARGS="--enable-prefix-caching --mamba-cache-mode align ${EXTRA_ARGS}"
+  # KVarN runs --block-size 128; match the prefix hash unit to it so cache hits
+  # land on tile boundaries (272 or any non-multiple of 128 corrupts the pool).
+  [ "$CTX" = "huge" ] && EXTRA_ARGS="--prefix-match-unit 128 ${EXTRA_ARGS}"
 fi
 
 # ASYNC_SCHED=0 (set above for a long DFlash2 verify block) runs the scheduler
