@@ -98,15 +98,16 @@ keyed the speed, and the V2 runner only knew bf16/fp8 KV. `kvarn/kvarn-v2-runner
 closes that gap — no kernel work, the KVarN Triton kernels run unmodified on the V2
 runner; all six fixes are allocator and geometry logic (the patch header walks through
 them, including an upstream vLLM bug in the mamba align resume path that any hybrid
-with an explicit `--block-size` can hit). RTX 3090 under WSL2 at a 250 W power
-limit, 10-round averages (all numbers in this section are WSL2 — bare-metal
-validation pending):
+with an explicit `--block-size` can hit, and a NaN path in the DFlash2 candidate
+selector that KVarN noise exposes on verbatim-reproduction content). RTX 3090
+under WSL2 at a 200 W power limit (all numbers in this section are WSL2 —
+bare-metal validation pending), `bench/labd_bench.py --ctx 20000`:
 
-| decode (`SPEC=dflash2 CTX=huge`) | tok/s |
+| `SPEC=dflash2 CTX=huge PREFIX_CACHE=1` | tok/s |
 |---|---|
-| German prose | 79 |
-| English prose | 129 |
-| code | 186 (single runs up to ~225 at 86% measured draft acceptance) |
+| copy / edit (reproduction, 6.4 tok per verify step) | 114 / 109 |
+| code / quote / summary / qa | 85 / 44 / 38 / 34 |
+| GSM8K exact-match (200 q, greedy, thinking off) | 95.5% |
 | KV capacity at 240k max-model-len | 268k tokens |
 | 200k-deep needle | correct |
 | turn 2 over a 200k cached prefix | 4.4 s (vs ~7.5 min cold) |

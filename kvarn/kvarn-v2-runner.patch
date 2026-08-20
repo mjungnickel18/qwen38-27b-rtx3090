@@ -23,11 +23,27 @@ V2 runner; every blocker was allocator/geometry logic:
     (Upstream vLLM bug: any hybrid with an explicit --block-size != mamba block size,
     prefix caching, and mamba_cache_mode=align hits this on the second request.)
 
-Measured on an RTX 3090 (WSL2, 250W), fast variant, 10-round averages:
-  de 79 / en 129 / code 186 tok/s (single runs up to ~225 at 86% draft acceptance,
-  per-round /metrics deltas), 240k max-model-len
-  with 268k tokens of KV, 200k-deep needle correct, and a 200k prefix-cache hit takes
-  the follow-up turn from ~7.5 min of prefill to 4.4 s.
+ 7. dflash2/speculator.py: on degenerate (ultra-peaked) distributions the
+    candidate selector's scores can go NaN -- KVarN quantization noise on
+    verbatim-reproduction content tips them over, which is why CTX=fast never
+    showed it. NaN made the path-walk kernel index past the candidate row
+    (garbage token id -> the illegal memory access in the replayed decode
+    graph on labd copy tasks) and poisoned the cached draft logits the
+    rejection sampler divides by (silently WRONG tokens: greedy copy
+    degenerated into repetition). Three-part fix: sanitize the scores to
+    finite values before sampling/caching, clamp the walk index, initialize
+    the selector token buffer with zeros instead of empty. Verified: 6/6
+    labd tasks pass at 240k (copy 6.36 tok/step), copy output verbatim
+    (599/600 chars vs the source, identical to MTP), GSM8K 95.0-95.5%
+    (n=100/200, author reference 96.0-96.5), 200k needle + prefix resume
+    unchanged.
+
+Measured on an RTX 3090 (WSL2, 200 W power limit), fast variant,
+bench/labd_bench.py --ctx 20000:
+  copy 114 / edit 109 / code 85 / quote 44 / summary 38 / qa 34 tok/s
+  (copy at 6.4 tokens per verify step), 240k max-model-len with 268k tokens
+  of KV, 200k-deep needle correct, and a 200k prefix-cache hit takes the
+  follow-up turn from ~7.5 min of prefill to 4.4 s.
 
 Apply AFTER kvarn-0.27.1.patch and the patches/ set (kvarn/install.sh does both):
   patch -p1 -d venv/lib/python3.12/site-packages/vllm < kvarn/kvarn-v2-runner.patch
@@ -182,3 +198,43 @@ Written against vLLM 0.27.1 + this repo's patch set.
              )
  
      def _get_mamba_group_info(
+--- a/v1/worker/gpu/spec_decode/dflash2/speculator.py
++++ b/v1/worker/gpu/spec_decode/dflash2/speculator.py
+@@ -105,6 +105,11 @@
+             realized,
+             mask=mask & valid,
+         )
++        # port(kvarn-v2): NaN scores make `scores == best` match nowhere, so
++        # index becomes BLOCK_K and the load below reads past the candidate
++        # row -- a garbage token id that later kills the embedding gather.
++        # Clamp to candidate 0; a wrong draft is just rejected by the verify.
++        index = tl.where(index >= top_k, 0, index)
+         token = tl.load(candidate_ptr + candidate_base + index, mask=valid, other=0)
+         tl.store(tokens_ptr + flat, token, mask=valid)
+         previous = index
+@@ -157,7 +162,9 @@
+             torch.arange(self.max_num_reqs, dtype=torch.int64, device=device)
+             * self.num_query_per_req
+         )
+-        self._selector_tokens = torch.empty_like(self.draft_tokens)
++        # port(kvarn-v2): zeros, not empty -- an unwritten slot must hold a
++        # valid token id, never uninitialized VRAM.
++        self._selector_tokens = torch.zeros_like(self.draft_tokens)
+         self._selector_scores = torch.empty(
+             self.max_num_reqs,
+             self.num_speculative_steps,
+@@ -291,6 +298,14 @@
+             hidden_states,
+             anchor_token_ids,
+         )
++        # port(kvarn-v2): degenerate (ultra-peaked) distributions can NaN the
++        # selector scores -- KVarN quantization noise on verbatim-reproduction
++        # content tips them over. NaN poisons both the path walk (index runs
++        # past the candidate row) and the cached draft logits the rejection
++        # sampler divides by, silently accepting wrong tokens. Sanitize to
++        # finite values: affected candidates keep a valid q, verify stays
++        # exact. Pure GPU op, cudagraph-capture-safe.
++        scores = torch.nan_to_num(scores, nan=-1e30, posinf=1e30, neginf=-1e30)
+         self._sample_path(candidate_ids, scores, num_reqs)
+         self._cache_draft_logits(candidate_ids, num_sample)
+         self.draft_tokens[:num_reqs].copy_(self._selector_tokens[:num_reqs])
