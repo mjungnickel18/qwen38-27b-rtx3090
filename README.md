@@ -98,7 +98,9 @@ keyed the speed, and the V2 runner only knew bf16/fp8 KV. `kvarn/kvarn-v2-runner
 closes that gap — no kernel work, the KVarN Triton kernels run unmodified on the V2
 runner; all six fixes are allocator and geometry logic (the patch header walks through
 them, including an upstream vLLM bug in the mamba align resume path that any hybrid
-with an explicit `--block-size` can hit). RTX 3090 at 250 W, 10-round averages:
+with an explicit `--block-size` can hit). RTX 3090 under WSL2 at a 250 W power
+limit, 10-round averages (all numbers in this section are WSL2 — bare-metal
+validation pending):
 
 | decode (`SPEC=dflash2 CTX=huge`) | tok/s |
 |---|---|
@@ -109,9 +111,13 @@ with an explicit `--block-size` can hit). RTX 3090 at 250 W, 10-round averages:
 | 200k-deep needle | correct |
 | turn 2 over a 200k cached prefix | 4.4 s (vs ~7.5 min cold) |
 
-That is ~5% under `CTX=fast` DFlash2 decode with 3.75x its context. Verified under
-WSL2 as well (set `VLLM_WSL_PIN_MEMORY=1` there — the V2 runner's UVA buffers work
-fine on WSL2's paravirt driver; vLLM's blanket pin-memory ban predates it).
+That is ~5% under `CTX=fast` DFlash2 decode with 3.75x its context. One caveat to
+the "all of it is lossless" paragraph above: the speculation here is still exact,
+but this mode inherits KVarN's 4/2-bit KV cache, which is lossy — the same trade
+`CTX=huge` already makes (deep-needle retrieval passes at 200k; combined-mode
+GSM8K/perplexity still pending). On WSL2, set `VLLM_WSL_PIN_MEMORY=1` — the V2
+runner's UVA buffers work fine on the paravirt driver; vLLM's blanket pin-memory
+ban predates it.
 
 ## Benchmarks
 

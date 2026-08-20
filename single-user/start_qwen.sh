@@ -112,13 +112,8 @@ if [ "$SPEC" = "dflash2" ]; then
   # applying edits or a RAG front-end quoting sources; the default stays 7.
   DRAFT_TOKENS=${DFLASH_TOKENS:-7}
   if [ "$CTX" = "huge" ]; then
-    # KVarN pool: ~20 KB/token effective. 5.26 GiB pinned -> 268k tokens of KV at
-    # 240k max-model-len with 2 slots (the drafter pays one aligned state page per
-    # slot, so single-user long-context keeps MAX_SEQS small). The split-KV verify
-    # attention is bf16-KV only -- the KVarN backend brings its own dequant path.
-    MAX_SEQS=${MAX_SEQS:-2}
-    MAX_LEN=${DFLASH_MAX_LEN:-245760}
-    KV_MEM=${KV_MEM-5261334938}
+    # The split-KV verify attention is bf16-KV only -- the KVarN backend brings
+    # its own dequant path. Memory numbers live in the chain below.
     export VLLM_SPEC_DECODE_ATTN=0
   fi
   SPEC_CFG="{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":$DRAFT_TOKENS}"
@@ -145,7 +140,15 @@ if [ "$SPEC" = "dflash2" ]; then
   # A longer verify block costs pool twice: bigger CUDA graphs, and one aligned recurrent
   # state page per request per speculative block. MAX_SEQS is what that scales with, so
   # single-user mode keeps 4 slots when the block is long.
-  if [ "$DRAFT_TOKENS" -gt 7 ]; then
+  if [ "$CTX" = "huge" ]; then
+    # KVarN pool: ~20 KB/token effective. 5.26 GiB pinned -> 268k tokens of KV
+    # at 245760 max-model-len with 2 slots (the drafter pays one aligned state
+    # page per slot, so single-user long-context keeps MAX_SEQS small).
+    MAX_SEQS=${MAX_SEQS:-2}
+    MAX_LEN=${DFLASH_MAX_LEN:-245760}
+    KV_MEM=${KV_MEM-5261334938}
+    export VLLM_V2_CUDAGRAPH_MEM_MIB=${VLLM_V2_CUDAGRAPH_MEM_MIB:-1400}
+  elif [ "$DRAFT_TOKENS" -gt 7 ]; then
     # 4 slots and 56k instead of 8 and 64k: the aligned state pages and the bigger decode
     # graphs are what the long block costs, and this is where they still fit next to the
     # 5.2 GiB pool (57,669 tokens). DFLASH_TOKENS=7 gets 8 slots and 64k back.
